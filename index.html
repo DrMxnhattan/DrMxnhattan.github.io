@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Generador EPIC / STORY</title>
+  <!-- Tailwind (CDN) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root { color-scheme: light dark; }
+    .dropzone { border: 2px dashed rgba(100,116,139,0.5); }
+    .dropzone.dragover { border-color: rgba(59,130,246,0.8); background: rgba(59,130,246,0.08); }
+  </style>
+</head>
+<body class="min-h-screen bg-slate-50 text-slate-800 antialiased">
+  <main class="max-w-3xl mx-auto p-6">
+    <header class="mb-8">
+      <h1 class="text-3xl font-bold tracking-tight">Generador de CSV para Jira</h1>
+      <p class="text-slate-600 mt-2">Convierte tu Excel de entregables en <span class="font-semibold">EPIC.csv</span> y luego genera <span class="font-semibold">STORY.csv</span> con tu export de Jira.</p>
+    </header>
+
+    <!-- Paso 0: Key Initiative -->
+    <section class="mb-8">
+      <label for="keyActivity" class="block text-sm font-medium text-slate-700 mb-2">Key Iniciative (se asigna a <code>key_Activity</code>)</label>
+      <input id="keyActivity" type="text" placeholder="Ej: MET-272" class="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+      <p class="mt-2 text-xs text-slate-500">Este valor se usará como <code>Parent</code> de los EPIC generados.</p>
+    </section>
+
+    <!-- Paso 1 -->
+    <section id="step1" class="mb-10">
+      <h2 class="text-xl font-semibold mb-3">Paso 1 — Cargar Excel para generar <span class="font-mono">EPIC.csv</span></h2>
+      <div id="drop1" class="dropzone rounded-2xl p-6 flex items-center justify-center text-slate-500 cursor-pointer">
+        <div class="text-center">
+          <div class="text-sm">Arrastra y suelta tu archivo <span class="font-semibold">.xlsx</span> (hoja <span class="font-mono">ListaControlEntregables</span>), o haz clic.</div>
+          <div class="text-xs mt-1">Esto llenará <code>file_path</code> y ejecutará el Proceso 1.</div>
+        </div>
+      </div>
+      <input id="file1" type="file" accept=".xlsx,.xls" class="hidden"/>
+
+      <div id="progress1Wrap" class="mt-4 hidden">
+        <div class="flex justify-between text-xs mb-1"><span>Progreso</span><span id="p1Label">0%</span></div>
+        <div class="w-full bg-slate-200 rounded-full h-3 overflow-hidden">
+          <div id="p1Bar" class="bg-blue-500 h-3 w-0 transition-all"></div>
+        </div>
+      </div>
+
+      <div id="epicResult" class="mt-4 hidden">
+        <div class="p-4 rounded-xl bg-green-50 border border-green-200">
+          <p class="text-sm">Listo. Se generó <span class="font-semibold">EPIC.csv</span>.</p>
+          <div class="mt-2 flex gap-3">
+            <a id="epicDownload" download="EPIC.csv" class="inline-flex items-center rounded-xl px-3 py-2 bg-green-600 text-white text-sm shadow hover:bg-green-700">Descargar EPIC.csv</a>
+            <button id="showStep2" class="inline-flex items-center rounded-xl px-3 py-2 bg-slate-800 text-white text-sm shadow hover:bg-slate-900">Continuar al Paso 2</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Paso 2 -->
+    <section id="step2" class="mb-10 hidden">
+      <h2 class="text-xl font-semibold mb-3">Paso 2 — Cargar export de Jira para generar <span class="font-mono">STORY.csv</span></h2>
+      <div id="drop2" class="dropzone rounded-2xl p-6 flex items-center justify-center text-slate-500 cursor-pointer">
+        <div class="text-center">
+          <div class="text-sm">Arrastra y suelta tu archivo <span class="font-semibold">.csv</span> de Jira (con columnas <span class="font-mono">Summary</span>, <span class="font-mono">Issue key</span>, <span class="font-mono">Parent key</span>), o haz clic.</div>
+          <div class="text-xs mt-1">Esto llenará <code>ruta_csv_2</code> y ejecutará el Proceso 2.</div>
+        </div>
+      </div>
+      <input id="file2" type="file" accept=".csv" class="hidden"/>
+
+      <div id="progress2Wrap" class="mt-4 hidden">
+        <div class="flex justify-between text-xs mb-1"><span>Progreso</span><span id="p2Label">0%</span></div>
+        <div class="w-full bg-slate-200 rounded-full h-3 overflow-hidden">
+          <div id="p2Bar" class="bg-blue-500 h-3 w-0 transition-all"></div>
+        </div>
+      </div>
+
+      <div id="storyResult" class="mt-4 hidden">
+        <div class="p-4 rounded-xl bg-green-50 border border-green-200">
+          <p class="text-sm">Listo. Se generó <span class="font-semibold">STORY.csv</span>.</p>
+          <a id="storyDownload" download="STORY.csv" class="inline-flex items-center rounded-xl px-3 py-2 bg-green-600 text-white text-sm shadow hover:bg-green-700">Descargar STORY.csv</a>
+        </div>
+      </div>
+    </section>
+
+    <footer class="text-xs text-slate-500">
+      Hecho con Pyodide + Pandas. Funciona 100% en el navegador, ideal para GitHub Pages.
+    </footer>
+  </main>
+
+  <!-- Pyodide -->
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
+  <script>
+    let pyodideReadyPromise;
+    let storyCacheReady = false; // si ya construimos story_csv en Python
+
+    async function loadPyodideAndPackages() {
+      if (!pyodideReadyPromise) {
+        pyodideReadyPromise = (async () => {
+          const pyodide = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/" });
+          // Paquetes Python (openpyxl para leer .xlsx)
+          await pyodide.loadPackage(["pandas", "micropip"]);
+          await pyodide.runPythonAsync(`
+import micropip
+try:
+    await micropip.install(['openpyxl','et_xmlfile'])
+except Exception as e:
+    print('Aviso micropip:', e)
+          `);
+          return pyodide;
+        })();
+      }
+      return pyodideReadyPromise;
+    }
+
+    function wireDropzone(zoneEl, inputEl, onFile) {
+      const onClick = () => inputEl.click();
+      const onDrop = e => { e.preventDefault(); zoneEl.classList.remove('dragover'); if (e.dataTransfer.files?.length) onFile(e.dataTransfer.files[0]); };
+      const onDragOver = e => { e.preventDefault(); zoneEl.classList.add('dragover'); };
+      const onDragLeave = e => { e.preventDefault(); zoneEl.classList.remove('dragover'); };
+      zoneEl.addEventListener('click', onClick);
+      zoneEl.addEventListener('drop', onDrop);
+      zoneEl.addEventListener('dragover', onDragOver);
+      zoneEl.addEventListener('dragleave', onDragLeave);
+      inputEl.addEventListener('change', e => { if (e.target.files?.[0]) onFile(e.target.files[0]); });
+    }
+
+    function setProgress(wrapId, barId, labelId, pct) {
+      document.getElementById(wrapId).classList.remove('hidden');
+      const bar = document.getElementById(barId);
+      const label = document.getElementById(labelId);
+      bar.style.width = `${pct}%`;
+      label.textContent = `${pct}%`;
+    }
+
+    function downloadFromFS(pyodide, path, filename, aEl) {
+      const data = pyodide.FS.readFile(path);
+      const blob = new Blob([data], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      aEl.href = url; aEl.download = filename;
+    }
+
+    // Paso 1: Excel -> EPIC.csv + story_csv en memoria
+    wireDropzone(document.getElementById('drop1'), document.getElementById('file1'), async (file) => {
+      const key = document.getElementById('keyActivity').value.trim();
+      if (!key) { alert('Por favor ingresa "Key Iniciative" primero.'); return; }
+      setProgress('progress1Wrap','p1Bar','p1Label', 10);
+
+      const pyodide = await loadPyodideAndPackages();
+      setProgress('progress1Wrap','p1Bar','p1Label', 25);
+
+      const buf = await file.arrayBuffer();
+      const pathXlsx = '/work/input.xlsx';
+      pyodide.FS.mkdirTree('/work');
+      pyodide.FS.writeFile(pathXlsx, new Uint8Array(buf));
+      setProgress('progress1Wrap','p1Bar','p1Label', 40);
+
+      const code = `
+import pandas as pd, numpy as np
+from pathlib import Path
+file_path = Path(r'${pathXlsx}')
+key_Activity = r'''${key.replace(/'/g, "''")}'''
+
+# Leer Excel (hoja ListaControlEntregables)
+try:
+    df = pd.read_excel(file_path, sheet_name='ListaControlEntregables')
+except FileNotFoundError:
+    raise FileNotFoundError('No se encontró el Excel subido')
+
+# EPIC: filas sin Checklist
+EPIC = (
+    df.loc[df['Checklist'].isna() | (df['Checklist'].astype(str).str.strip() == ''), ['ETAPAS']]
+      .reset_index()
+)
+EPIC.columns = ['Posicion','ETAPAS']
+
+# STORY: filas con Checklist, limpiando el nombre
+def _limpia_etapas(s: pd.Series) -> pd.Series:
+    out = (s.astype(str)
+        .str.replace(r'(?i)^Client_|_YYY.*$', '', regex=True)
+        .str.replace('_', ' ', regex=True)
+        .str.replace(r'(?<=[a-z])(?=[A-Z])', ' ', regex=True)
+        .str.replace(r'(?<=[A-Z])(?=[A-Z][a-z])', ' ', regex=True)
+        .str.replace(r'\s+', ' ', regex=True)
+        .str.strip()
+    )
+    return out
+
+STORY = (
+    df.loc[~(df['Checklist'].isna() | (df['Checklist'].astype(str).str.strip() == '')), ['ETAPAS']]
+      .assign(ETAPAS=lambda x: _limpia_etapas(x['ETAPAS']))
+      .reset_index()
+)
+STORY.columns = ['Posicion','ETAPAS_limpias']
+
+# Orden estable
+EPIC_sorted = EPIC.sort_values('Posicion', kind='stable').reset_index(drop=True)
+STORY_sorted = STORY.sort_values('Posicion', kind='stable').reset_index(drop=True)
+
+# Mapear cada STORY al EPIC inmediato anterior (por posición)
+if len(EPIC_sorted) > 0:
+    starts = EPIC_sorted['Posicion'].to_numpy()
+    ends = np.r_[starts[1:] - 1, np.iinfo(np.int64).max]
+    epic_intervals = pd.IntervalIndex.from_arrays(starts, ends, closed='both')
+    idx = epic_intervals.get_indexer(STORY_sorted['Posicion'])
+    parent_names = pd.Series('', index=STORY_sorted.index, dtype=object)
+    m = idx >= 0
+    if m.any():
+        parent_names.loc[m] = EPIC_sorted['ETAPAS'].to_numpy()[idx[m]]
+else:
+    parent_names = pd.Series(['']*len(STORY_sorted), index=STORY_sorted.index, dtype=object)
+
+# Construir DataFrames de salida
+epic_csv = pd.DataFrame({
+    'Issue Type': ['Epic'] * len(EPIC_sorted),
+    'Issue id': [''] * len(EPIC_sorted),
+    'Parent': [key_Activity] * len(EPIC_sorted),
+    'Summary': EPIC_sorted['ETAPAS'].astype(str).tolist()
+})
+
+story_csv = pd.DataFrame({
+    'Issue Type': ['Story'] * len(STORY_sorted),
+    'Issue id': [''] * len(STORY_sorted),
+    'Parent': parent_names.astype(str).tolist(),
+    'Summary': STORY_sorted['ETAPAS_limpias'].astype(str).tolist()
+})
+
+# Guardar EPIC.csv
+epic_csv.to_csv('/work/EPIC.csv', index=False, encoding='utf-8-sig')
+      `;
+
+      try {
+        await pyodide.runPythonAsync(code);
+        setProgress('progress1Wrap','p1Bar','p1Label', 85);
+        downloadFromFS(pyodide, '/work/EPIC.csv', 'EPIC.csv', document.getElementById('epicDownload'));
+        setProgress('progress1Wrap','p1Bar','p1Label', 100);
+        document.getElementById('epicResult').classList.remove('hidden');
+        storyCacheReady = true;
+      } catch (err) {
+        console.error(err);
+        alert('Error en Proceso 1: ' + err.message);
+        setProgress('progress1Wrap','p1Bar','p1Label', 0);
+      }
+    });
+
+    document.getElementById('showStep2').addEventListener('click', () => {
+      document.getElementById('step2').classList.remove('hidden');
+      document.getElementById('showStep2').disabled = true;
+    });
+
+    // Paso 2: Jira CSV -> STORY.csv (actualizado con Issue key)
+    wireDropzone(document.getElementById('drop2'), document.getElementById('file2'), async (file) => {
+      if (!storyCacheReady) { alert('Primero ejecuta el Paso 1.'); return; }
+      setProgress('progress2Wrap','p2Bar','p2Label', 10);
+
+      const pyodide = await loadPyodideAndPackages();
+      setProgress('progress2Wrap','p2Bar','p2Label', 25);
+
+      const buf = await file.arrayBuffer();
+      const pathCsv = '/work/jira.csv';
+      pyodide.FS.writeFile(pathCsv, new Uint8Array(buf));
+      setProgress('progress2Wrap','p2Bar','p2Label', 45);
+
+      const code2 = `
+import pandas as pd
+from pathlib import Path
+ruta_csv_2 = Path('/work/jira.csv')
+key_Activity = str(globals().get('key_Activity', ''))
+
+# Tomamos story_csv y EPIC del contexto del Paso 1
+epic_df = globals().get('epic_csv')
+story_df = globals().get('story_csv')
+EPIC = globals().get('EPIC')
+if EPIC is None or story_df is None:
+    raise RuntimeError('Faltan datos del Paso 1 en el entorno de Python.')
+
+# Construir EPIC_KEYS desde el export de Jira
+import re
+
+def construir_epic_keys(ruta_csv: str, EPIC: pd.DataFrame, key_Activit: str) -> pd.DataFrame:
+    columnas_salida = ['Summary', 'Issue key']
+    EPIC_KEYS = pd.DataFrame(columns=columnas_salida)
+    ruta = Path(ruta_csv)
+    if not ruta.exists():
+        return EPIC_KEYS
+    df_csv = pd.read_csv(ruta, dtype=str, encoding='utf-8', engine='python')
+    # Normalizar columnas
+    for col in ['Summary','Issue key','Parent key']:
+        if col not in df_csv.columns:
+            raise ValueError(f'El CSV de Jira debe contener la columna {col!r}.')
+    # Lista de nombres de EPIC (etapas)
+    etapas = (
+        EPIC['ETAPAS'].dropna().astype(str).str.strip().unique().tolist()
+    )
+    if not etapas:
+        return EPIC_KEYS
+    # Regex OR de todas las etapas (escape por seguridad)
+    regex = '|'.join(re.escape(p) for p in etapas)
+    m_summary = df_csv['Summary'].astype(str).str.contains(regex, case=False, na=False)
+    key_norm = str(key_Activit).strip().upper()
+    m_parent = df_csv['Parent key'].astype(str).str.strip().str.upper().eq(key_norm)
+    mask = m_summary & m_parent
+    EPIC_KEYS = (
+        df_csv.loc[mask, ['Summary','Issue key']]
+              .drop_duplicates(subset=['Summary','Issue key'])
+              .reset_index(drop=True)
+    )
+    return EPIC_KEYS
+
+EPIC_KEYS = construir_epic_keys(str(ruta_csv_2), EPIC, key_Activity)
+
+# Reemplazar Parent (nombre de etapa) por Issue key
+
+def reemplazar_parent_con_issue_key(story_csv: pd.DataFrame, EPIC_KEYS: pd.DataFrame) -> pd.DataFrame:
+    story = story_csv.copy()
+    epic_norm = (EPIC_KEYS.assign(_summary_norm=EPIC_KEYS['Summary'].astype(str).str.strip().str.upper())
+                          .drop_duplicates(subset=['_summary_norm'])
+                          .set_index('_summary_norm')['Issue key'])
+    story['_parent_norm'] = story['Parent'].astype(str).str.strip().str.upper()
+    story['Parent'] = story['_parent_norm'].map(epic_norm).fillna(story['Parent'])
+    story.drop(columns=['_parent_norm'], inplace=True)
+    return story
+
+story_csv_actualizado = reemplazar_parent_con_issue_key(story_df, EPIC_KEYS)
+
+# Guardar STORY.csv
+story_csv_actualizado.to_csv('/work/STORY.csv', index=False, encoding='utf-8-sig')
+      `;
+
+      try {
+        await pyodide.runPythonAsync(code2);
+        setProgress('progress2Wrap','p2Bar','p2Label', 85);
+        downloadFromFS(pyodide, '/work/STORY.csv', 'STORY.csv', document.getElementById('storyDownload'));
+        setProgress('progress2Wrap','p2Bar','p2Label', 100);
+        document.getElementById('storyResult').classList.remove('hidden');
+      } catch (err) {
+        console.error(err);
+        alert('Error en Proceso 2: ' + err.message);
+        setProgress('progress2Wrap','p2Bar','p2Label', 0);
+      }
+    });
+  </script>
+</body>
+</html>
