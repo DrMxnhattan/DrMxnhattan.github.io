@@ -1,7 +1,7 @@
 
 # Generador EPIC/STORY (GitHub Pages)
 
-Sitio estático que convierte tu Excel de entregables en **EPIC.csv** y luego toma tu export de Jira para producir **STORY.csv**. Todo se ejecuta **en el navegador** con Pyodide (pandas + openpyxl). No requiere backend, ideal para **GitHub Pages**.
+Sitio estático que convierte tu Excel de entregables en **EPIC.csv** y luego toma tu export de Jira para producir **STORY.csv**. Todo se ejecuta **en el navegador** con Pyodide (pandas + openpyxl).
 
 ## Uso
 1. Escribe el valor **Key Iniciative** (se asigna a `key_Activity` y se usa como `Parent` de los EPIC).
