@@ -138,6 +138,12 @@ except Exception as e:
       aEl.href = url; aEl.download = filename;
     }
 
+    // Filename helpers
+    const toSafeFilename = (name) =>
+      String(name).replace(/[\\/:*?"<>|]+/g, '_').replace(/\s+/g, ' ').trim();
+
+    const getFileStem = (name) => toSafeFilename(name).replace(/\.[^.]+$/, '');
+
     // Paso 1: Excel -> EPIC.csv + story_csv en memoria
     wireDropzone(document.getElementById('drop1'), document.getElementById('file1'), async (file) => {
       const key = document.getElementById('keyActivity').value.trim();
@@ -148,16 +154,22 @@ except Exception as e:
       setProgress('progress1Wrap','p1Bar','p1Label', 25);
 
       const buf = await file.arrayBuffer();
-      const pathXlsx = '/work/input.xlsx';
+      const safeName = toSafeFilename(file.name) || 'input.xlsx';
+      const pathXlsx = `/work/${safeName}`;
       pyodide.FS.mkdirTree('/work');
       pyodide.FS.writeFile(pathXlsx, new Uint8Array(buf));
       setProgress('progress1Wrap','p1Bar','p1Label', 40);
+
+      // metodología a inyectar: nombre del archivo sin extensión (del archivo subido)
+      const metodologiaClave = getFileStem(file.name);
+      const metodologiaClavePy = metodologiaClave.replace(/'/g, "''"); // escape para string Python
 
       const code = `
 import pandas as pd, numpy as np
 from pathlib import Path
 file_path = Path(r'${pathXlsx}')
 key_Activity = r'''${key.replace(/'/g, "''")}'''
+metodologia_clave = r'''${metodologiaClavePy}'''
 
 # Leer Excel (hoja ListaControlEntregables)
 try:
@@ -179,7 +191,7 @@ def _limpia_etapas(s: pd.Series) -> pd.Series:
         .str.replace('_', ' ', regex=True)
         .str.replace(r'(?<=[a-z])(?=[A-Z])', ' ', regex=True)
         .str.replace(r'(?<=[A-Z])(?=[A-Z][a-z])', ' ', regex=True)
-        .str.replace(r'\s+', ' ', regex=True)
+        .str.replace(r'\\s+', ' ', regex=True)
         .str.strip()
     )
     return out
@@ -223,8 +235,16 @@ story_csv = pd.DataFrame({
     'Summary': STORY_sorted['ETAPAS_limpias'].astype(str).tolist()
 })
 
-# Guardar EPIC.csv
+# Añadir la columna solo si NO existe ya
+col_name = 'Custom field (ITIS - Clave de la metodología)'
+if col_name not in epic_csv.columns:
+    epic_csv[col_name] = metodologia_clave if metodologia_clave else Path(file_path).stem
+if col_name not in story_csv.columns:
+    story_csv[col_name] = metodologia_clave if metodologia_clave else Path(file_path).stem
+
+# Guardar CSVs
 epic_csv.to_csv('/work/EPIC.csv', index=False, encoding='utf-8-sig')
+story_csv.to_csv('/work/STORY.csv', index=False, encoding='utf-8-sig')
       `;
 
       try {
@@ -282,7 +302,7 @@ def construir_epic_keys(ruta_csv: str, EPIC: pd.DataFrame, key_Activit: str) -> 
     if not ruta.exists():
         return EPIC_KEYS
     df_csv = pd.read_csv(ruta, dtype=str, encoding='utf-8', engine='python')
-    # Normalizar columnas
+    # Validar columnas necesarias
     for col in ['Summary','Issue key','Parent key']:
         if col not in df_csv.columns:
             raise ValueError(f'El CSV de Jira debe contener la columna {col!r}.')
@@ -308,7 +328,6 @@ def construir_epic_keys(ruta_csv: str, EPIC: pd.DataFrame, key_Activit: str) -> 
 EPIC_KEYS = construir_epic_keys(str(ruta_csv_2), EPIC, key_Activity)
 
 # Reemplazar Parent (nombre de etapa) por Issue key
-
 def reemplazar_parent_con_issue_key(story_csv: pd.DataFrame, EPIC_KEYS: pd.DataFrame) -> pd.DataFrame:
     story = story_csv.copy()
     epic_norm = (EPIC_KEYS.assign(_summary_norm=EPIC_KEYS['Summary'].astype(str).str.strip().str.upper())
@@ -321,7 +340,7 @@ def reemplazar_parent_con_issue_key(story_csv: pd.DataFrame, EPIC_KEYS: pd.DataF
 
 story_csv_actualizado = reemplazar_parent_con_issue_key(story_df, EPIC_KEYS)
 
-# Guardar STORY.csv
+# Guardar STORY.csv (se preserva cualquier columna adicional, incluida la de metodología)
 story_csv_actualizado.to_csv('/work/STORY.csv', index=False, encoding='utf-8-sig')
       `;
 
